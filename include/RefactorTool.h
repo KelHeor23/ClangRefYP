@@ -36,6 +36,8 @@ private:
 private:
     clang::Rewriter &Rewrite;
     std::unordered_set<unsigned> virtualDtorLocations; // Для хранения позиций деструкторов, к которым уже добавлен virtual
+    std::unordered_set<unsigned> overrideLocations;
+    std::unordered_set<unsigned> crangeForLocations;
 };
 
 class ComplexConsumer : public clang::ASTConsumer {
