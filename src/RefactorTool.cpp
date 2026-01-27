@@ -37,7 +37,6 @@ void RefactorHandler::run(const MatchFinder::MatchResult &Result) {
     }
 }
 
-//todo: необходимо реализовать обработку случая невиртуального деструктора
 void RefactorHandler::handle_nv_dtor(const CXXDestructorDecl *Dtor,
                             DiagnosticsEngine &Diag,
                             SourceManager &SM) {
@@ -48,19 +47,38 @@ void RefactorHandler::handle_nv_dtor(const CXXDestructorDecl *Dtor,
     if (!Base || !Base->getDefinition())
         return;
 
-    unsigned rawLoc = SM.getSpellingLoc(Dtor->getLocation()).getRawEncoding();
-    if (virtualDtorLocations.count(rawLoc))
+    bool hasDerived = false;
+    for (auto it = Base->redecls_begin(); it != Base->redecls_end(); ++it) {
+        if (auto *CRD = dyn_cast<CXXRecordDecl>(*it)) {
+            for (auto *OtherDecl : CRD->getDeclContext()->decls()) {
+                if (auto *OtherCRD = dyn_cast<CXXRecordDecl>(OtherDecl)) {
+                    if (OtherCRD->isDerivedFrom(CRD) && OtherCRD != CRD) {
+                        hasDerived = true;
+                        break;
+                    }
+                }
+            }
+            if (hasDerived) break;
+        }
+    }
+    
+    if (!hasDerived)
         return;
-    virtualDtorLocations.insert(rawLoc);
 
-    Rewrite.InsertTextBefore(Dtor->getSourceRange().getBegin(), "virtual ");
+    unsigned rawLoc = SM.getSpellingLoc(Dtor->getLocation()).getRawEncoding();
+    if (!virtualDtorLocations.emplace(rawLoc).second)
+        return;
+
+    SourceLocation dtorStart = Dtor->getSourceRange().getBegin();
+    if (dtorStart.isValid()) {
+        Rewrite.InsertTextBefore(dtorStart, "virtual ");
+    }
 
     const unsigned DiagID = Diag.getCustomDiagID(DiagnosticsEngine::Remark,
                                                  "Added 'virtual' to destructor of base class with derived types");
     Diag.Report(Dtor->getLocation(), DiagID);
 }
 
-//todo: необходимо реализовать обработку случая отсутствие override
 void RefactorHandler::handle_miss_override(const CXXMethodDecl *Method,
                             DiagnosticsEngine &Diag,
                             SourceManager &SM) {
@@ -68,21 +86,21 @@ void RefactorHandler::handle_miss_override(const CXXMethodDecl *Method,
         return;
 
     unsigned rawLoc = SM.getSpellingLoc(Method->getLocation()).getRawEncoding();
-    if (overrideLocations.count(rawLoc))
+    if (!overrideLocations.emplace(rawLoc).second)
         return;
-    overrideLocations.insert(rawLoc);
 
     SourceLocation InsertLoc;
 
-    if (const Stmt *Body = Method->getBody()) {
-        // Метод с телом: вставляем перед '{'
-        InsertLoc = Body->getBeginLoc();
-    } else {
-        // Без тела: вставляем в конец объявления (перед ';' или '= 0')
-        InsertLoc = Method->getEndLoc();
+    if (const auto *TSI = Method->getTypeSourceInfo()) {
+        if (auto FTL = TSI->getTypeLoc().getAs<FunctionTypeLoc>()) {
+            InsertLoc = Lexer::getLocForEndOfToken(FTL.getRParenLoc(), 0, SM, Rewrite.getLangOpts());
+        }
     }
 
-    Rewrite.InsertTextBefore(InsertLoc, " override");
+    if (InsertLoc.isInvalid())
+        return;
+
+    Rewrite.InsertText(InsertLoc, " override", false, false);
 
     const unsigned DiagID = Diag.getCustomDiagID(DiagnosticsEngine::Remark, "Added 'override' to overriding method");
     Diag.Report(Method->getLocation(), DiagID);
@@ -95,11 +113,9 @@ void RefactorHandler::handle_crange_for(const VarDecl *LoopVar,
     if (!SM.isInMainFile(LoopVar->getLocation()))
         return;
 
-    // Защита от дублей
     unsigned rawLoc = SM.getSpellingLoc(LoopVar->getLocation()).getRawEncoding();
-    if (crangeForLocations.count(rawLoc))
+    if (!crangeForLocations.emplace(rawLoc).second)
         return;
-    crangeForLocations.insert(rawLoc);
 
     TypeSourceInfo *TSI = LoopVar->getTypeSourceInfo();
     if (!TSI)
@@ -110,7 +126,6 @@ void RefactorHandler::handle_crange_for(const VarDecl *LoopVar,
     if (EndLoc.isInvalid())
         return;
 
-    // Вставляем '&' сразу после типа
     Rewrite.InsertTextAfterToken(EndLoc, "&");
 
     const unsigned DiagID =
@@ -118,36 +133,43 @@ void RefactorHandler::handle_crange_for(const VarDecl *LoopVar,
     Diag.Report(LoopVar->getLocation(), DiagID);
 }
 
-//todo: ниже необходимо реализовать матчеры для поиска узлов AST
-//note: синтаксис написания матчеров точно такой же как и для использования clang-query
-/*
-    Пример того, как может выглядеть реализация:
-    auto AllClassesMatcher()
-    {
-        return cxxRecordDecl().bind("classDecl");
-    }
-*/
 auto NvDtorMatcher()
 {
-    return cxxDestructorDecl(unless(isVirtual()), ofClass(cxxRecordDecl(isDerivedFrom(cxxRecordDecl()))))
-        .bind("nonVirtualDtor");
+    // Ищем невиртуальные деструкторы в классах, которые имеют производные классы
+    return cxxDestructorDecl(
+        unless(isVirtual()), 
+        unless(isImplicit()), 
+        isExpansionInMainFile()
+    ).bind("nonVirtualDtor");
 }
 
 auto NoOverrideMatcher()
 {
-    //todo: замените код ниже, на свою реализацию, необходимо реализовать матчеры для поиска методов без override
-    return cxxMethodDecl(isOverride(), unless(hasAttr(clang::attr::Override)), unless(isImplicit()),
-                    unless(cxxDestructorDecl()), isExpansionInMainFile())
-        .bind("missingOverride");
+    // Ищем методы, которые переопределяют базовые методы, но не имеют атрибута override
+    return cxxMethodDecl(
+        isOverride(),
+        unless(hasAttr(clang::attr::Override)),
+        unless(isImplicit()),
+        unless(cxxDestructorDecl()),
+        isExpansionInMainFile()
+    ).bind("missingOverride");
 }
 
 auto NoRefConstVarInRangeLoopMatcher()
 {
     //todo: замените код ниже, на свою реализацию, необходимо реализовать матчеры для поиска range-for без &
     return cxxForRangeStmt(
-        hasLoopVariable(varDecl(hasType(qualType(isConstQualified(), unless(referenceType()), unless(builtinType()))),
-                    isExpansionInMainFile())
-        .bind("loopVar")));
+        hasLoopVariable(
+            varDecl(
+                hasType(qualType(
+                    isConstQualified(),
+                    unless(referenceType()),
+                    unless(hasCanonicalType(builtinType()))
+                )),
+                isExpansionInMainFile()
+            ).bind("loopVar")
+        )
+    );
 }
 
 // Конструктор принимает Rewriter для изменения кода.
@@ -173,7 +195,7 @@ std::unique_ptr<ASTConsumer> CodeRefactorAction::CreateASTConsumer(CompilerInsta
 
 bool CodeRefactorAction::BeginSourceFileAction( CompilerInstance &CI) {
 // Инициализируем Rewriter для рефакторинга.
-RewriterForCodeRefactor.setSourceMgr(CI.getSourceManager(),
+    RewriterForCodeRefactor.setSourceMgr(CI.getSourceManager(),
                                         CI.getLangOpts());
     return true;  // Возвращаем true, чтобы продолжить обработку файла.
 }
@@ -185,7 +207,7 @@ void CodeRefactorAction::EndSourceFileAction() {
     }
 }
 
-
+/*
 int main(int argc, const char **argv) {
     // Парсер опций: Обрабатывает флаги командной строки, компиляционные базы данных.
     auto ExpectedParser = CommonOptionsParser::create(argc, argv, ToolCategory);
@@ -199,3 +221,4 @@ int main(int argc, const char **argv) {
     // Запускаем RefactorAction.
     return Tool.run(newFrontendActionFactory<CodeRefactorAction>().get());
 }
+*/
