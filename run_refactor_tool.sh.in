@@ -1,0 +1,24 @@
+#!/bin/bash
+TIMESTAMP=$(date +%s)
+LOG_FILE="asan_${TIMESTAMP}.log"
+
+export ASAN_OPTIONS="log_path=${LOG_FILE}:verbosity=1:detect_leaks=1:halt_on_error=0"
+export ASAN_SYMBOLIZER_PATH="@LLVM_SYMBOLIZER_PATH@"
+
+echo "Running refactor_tool with ASAN..."
+echo "Log file: ${LOG_FILE}"
+echo "---------------------------------"
+
+./refactor_tool "$@"
+
+EXIT_CODE=$?
+
+echo "---------------------------------"
+echo "ASAN log saved to: ${LOG_FILE}"
+
+if [ -f "${LOG_FILE}" ]; then
+    echo "Log content:"
+    cat "${LOG_FILE}"
+fi
+
+exit $EXIT_CODE

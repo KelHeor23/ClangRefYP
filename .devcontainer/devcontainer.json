@@ -8,6 +8,12 @@
         "USER_GID": "${localEnv:USER_GID}"
       }
   },
+      "runArgs": [
+        "--privileged"
+    ],
+    "containerEnv": {
+        "PERF_EVENT_PARANOID": "0"
+    },
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "remoteUser": "dev",
   "postStartCommand": "conan profile detect || true",
