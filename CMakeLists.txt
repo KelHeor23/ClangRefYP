@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
 project(clang-tutor)
 
+# Создаем скрипт запуска
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/run_refactor_tool.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/run_refactor_tool.sh"
+    @ONLY
+)
+
+# Делаем скрипт исполняемым
+file(COPY "${CMAKE_CURRENT_BINARY_DIR}/run_refactor_tool.sh"
+     DESTINATION "${CMAKE_CURRENT_BINARY_DIR}"
+     FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+)
+
 #===============================================================================
 # 0. GET CLANG INSTALLATION DIR
 #===============================================================================
@@ -107,5 +120,3 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
 #===============================================================================
 add_subdirectory(tests)
 add_subdirectory(src)
-
-
