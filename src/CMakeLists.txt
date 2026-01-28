@@ -27,6 +27,23 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(refactor_tool RefactorTool.cpp)
 
+option(USE_ASAN "Enable AddressSanitizer" ON)
+
+if(USE_ASAN)
+    message(STATUS "Applying ASAN to refactor_tool")
+    
+    target_compile_options(refactor_tool PRIVATE
+        -fsanitize=address
+        -fno-omit-frame-pointer
+        -g
+        -O1
+    )
+    
+    target_link_options(refactor_tool PRIVATE
+        -fsanitize=address
+    )
+endif()
+
 # Configure include directories for 'plugin'
 target_include_directories(
   refactor_tool
